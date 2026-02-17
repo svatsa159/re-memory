@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pdftotext:*)",
+      "WebSearch",
+      "Bash(cargo check:*)",
+      "Bash(cargo test:*)",
+      "Bash(uv venv:*)",
+      "Bash(source:*)",
+      "Bash(uv pip install:*)",
+      "Bash(python:*)",
+      "Bash(re-memory --version:*)",
+      "Bash(re-memory init:*)",
+      "Bash(re-memory status:*)",
+      "Bash(re-memory observe \"User prefers Python for scripting\")",
+      "Bash(re-memory --json observe:*)",
+      "Bash(re-memory:*)",
+      "Bash(wc:*)"
+    ]
+  }
+}

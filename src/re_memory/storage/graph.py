@@ -122,20 +122,53 @@ class GraphStore:
         ]
 
     def search_triples(self, text: str, limit: int = 20) -> list[dict]:
-        """Search for triples containing text in subject, predicate, or object."""
-        query = """
+        """Search for triples containing any keyword from text.
+
+        Tokenizes the query into individual words, filters stop words,
+        and matches triples where any keyword appears in subject, predicate,
+        or object names.
+        """
+        stop_words = {
+            "a", "an", "the", "is", "are", "was", "were", "be", "been",
+            "do", "does", "did", "will", "would", "could", "should", "may",
+            "might", "can", "shall", "has", "have", "had", "of", "in", "to",
+            "for", "on", "at", "by", "with", "from", "about", "into", "and",
+            "or", "but", "not", "no", "so", "if", "then", "than", "that",
+            "this", "it", "its", "my", "your", "his", "her", "our", "their",
+            "what", "which", "who", "whom", "how", "when", "where", "why",
+            "me", "him", "us", "them", "i", "you", "he", "she", "we", "they",
+            "tell", "know", "think", "get", "make",
+        }
+        keywords = [
+            w for w in text.lower().split()
+            if w not in stop_words and len(w) > 1
+        ]
+        if not keywords:
+            keywords = text.lower().split()
+
+        # Build a WHERE clause that matches any keyword in subject, predicate, or object
+        conditions = []
+        params: dict = {"limit": limit}
+        for i, kw in enumerate(keywords):
+            param = f"kw{i}"
+            params[param] = kw
+            conditions.append(
+                f"(toLower(s.name) CONTAINS ${param} OR "
+                f"toLower(o.name) CONTAINS ${param} OR "
+                f"toLower(r.predicate) CONTAINS ${param})"
+            )
+
+        where_clause = f"({' OR '.join(conditions)}) AND r.active = true"
+
+        query = f"""
             MATCH (s:Entity)-[r:RELATION]->(o:Entity)
-            WHERE (s.name CONTAINS $text OR o.name CONTAINS $text
-                   OR r.predicate CONTAINS $text) AND r.active = true
-            RETURN s.name AS subject, r.predicate AS predicate,
+            WHERE {where_clause}
+            RETURN DISTINCT s.name AS subject, r.predicate AS predicate,
                    o.name AS object, r.confidence AS confidence
             ORDER BY r.confidence DESC
             LIMIT $limit
         """
-        result = self.graph.query(
-            query,
-            params={"text": text, "limit": limit},
-        )
+        result = self.graph.query(query, params=params)
         return [
             {
                 "subject": row[0],
@@ -163,6 +196,32 @@ class GraphStore:
             },
         )
 
+    def delete_by_source_event(self, source_event_id: str) -> int:
+        """Delete all triples that originated from a specific episodic event.
+
+        Returns the number of relationships deleted.
+        """
+        result = self.graph.query(
+            """
+            MATCH (s:Entity)-[r:RELATION]->(o:Entity)
+            WHERE r.source_event_id = $event_id
+            DELETE r
+            RETURN COUNT(r) AS deleted
+            """,
+            params={"event_id": source_event_id},
+        )
+        # Clean up orphan nodes (entities with no remaining relationships)
+        self.graph.query(
+            """
+            MATCH (n:Entity)
+            WHERE NOT (n)-[:RELATION]-() AND NOT (n)<-[:RELATION]-()
+            DELETE n
+            """
+        )
+        if result.result_set:
+            return result.result_set[0][0]
+        return 0
+
     def get_conflicting_triples(self, subject: str, predicate: str) -> list[dict]:
         """Find active triples that might conflict with a new assertion."""
         query = """
@@ -186,16 +245,19 @@ class GraphStore:
         ]
 
     def status(self) -> dict:
-        """Get graph statistics."""
+        """Get graph statistics with a live connectivity check."""
         try:
-            nodes = self.graph.query("MATCH (n) RETURN COUNT(n)").result_set
-            edges = self.graph.query("MATCH ()-[r]->() RETURN COUNT(r)").result_set
+            # Force a fresh connection to verify FalkorDB is reachable
+            check_client = FalkorDBClient(host=self.host, port=self.port)
+            check_graph = check_client.select_graph(GRAPH_NAME)
+            nodes = check_graph.query("MATCH (n) RETURN COUNT(n)").result_set
+            edges = check_graph.query("MATCH ()-[r]->() RETURN COUNT(r)").result_set
             return {
                 "graph_nodes": nodes[0][0] if nodes else 0,
                 "graph_edges": edges[0][0] if edges else 0,
             }
         except Exception:
-            return {"graph_nodes": 0, "graph_edges": 0}
+            return {"graph_nodes": 0, "graph_edges": 0, "status": "unavailable"}
 
     def close(self):
         """Close the connection."""

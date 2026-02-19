@@ -1,24 +1,7 @@
-"""Tests for the encoding loop."""
+"""Tests for the encoding loop.
 
-import tempfile
-from pathlib import Path
-
-import pytest
-
-from re_memory.config import Config
-from re_memory.engine import MemoryEngine
-
-
-@pytest.fixture
-def engine(tmp_path):
-    config = Config(
-        data_dir=str(tmp_path / ".re-memory"),
-        storage={"sqlite_path": str(tmp_path / "events.db"), "schema_dir": str(tmp_path / "schemas")},
-    )
-    eng = MemoryEngine(config=config)
-    eng.init()
-    yield eng
-    eng.close()
+Uses the shared `engine` fixture from conftest.py for Qdrant isolation.
+"""
 
 
 def test_observe_stores_event(engine):
@@ -30,8 +13,10 @@ def test_observe_stores_event(engine):
 
 
 def test_observe_different_texts_different_ids(engine):
-    r1 = engine.observe("I love Python")
-    r2 = engine.observe("I love Rust")
+    r1 = engine.observe("The database migration completed successfully last night")
+    r2 = engine.observe("User's favorite recipe is homemade pasta with basil")
+    assert r1["status"] == "encoded"
+    assert r2["status"] == "encoded"
     assert r1["id"] != r2["id"]
 
 
@@ -57,8 +42,8 @@ def test_observe_with_metadata(engine):
 
 
 def test_status_after_observe(engine):
-    engine.observe("Memory one")
-    engine.observe("Memory two")
+    engine.observe("User prefers dark mode for all applications")
+    engine.observe("The quarterly earnings report exceeded analyst expectations")
     status = engine.status()
     assert status["counts"]["episodic_events"] == 2
 

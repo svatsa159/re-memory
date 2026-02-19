@@ -1,23 +1,36 @@
 """Tests for the consolidation loop."""
 
+import uuid
+
 import pytest
 from datetime import datetime, timezone, timedelta
 
 from re_memory.config import Config
 from re_memory.engine import MemoryEngine
 from re_memory.storage.event_store import EpisodicEvent
+from re_memory.storage.vector import VectorStore
 
 
 @pytest.fixture
 def engine(tmp_path):
+    test_id = uuid.uuid4().hex[:8]
     config = Config(
         data_dir=str(tmp_path / ".re-memory"),
         storage={"sqlite_path": str(tmp_path / "events.db"), "schema_dir": str(tmp_path / "schemas")},
         consolidation={"decay_rate": 0.1, "confidence_threshold": 0.2},
     )
     eng = MemoryEngine(config=config)
+    eng._vector_store = VectorStore(
+        url=config.storage.qdrant_url,
+        embedding_dim=config.embedding.dimensions,
+        collection_name=f"test_{test_id}",
+    )
     eng.init()
     yield eng
+    try:
+        eng.vector_store.client.delete_collection(eng.vector_store.collection_name)
+    except Exception:
+        pass
     eng.close()
 
 

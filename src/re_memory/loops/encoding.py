@@ -27,13 +27,20 @@ def encode(engine, text: str, source: str = "cli", metadata: dict | None = None)
 async def _encode_async(
     engine, text: str, source: str, metadata: dict | None
 ) -> dict:
-    """Full encoding pipeline: EC → DG → CA1 → Amygdala → Store."""
+    """Full encoding pipeline: EC → DG → CA1 → Amygdala → Store.
+
+    Parallelizes independent LLM calls for performance:
+      - Embedding, LLM feature extraction, and importance scoring run concurrently
+      - Contradiction check runs after novelty detection (needs its result)
+    """
     from ..brain.dentate_gyrus import pattern_separate
     from ..brain.ca1 import CA1NoveltyDetector, NoveltyVerdict
 
-    # --- EC: Entorhinal Cortex — parse + embed ---
+    # --- Phase 1: Parallel LLM + embedding calls ---
     embedding = None
     parsed_features = {}
+    importance = 0.5
+    llm = None
     llm_available = False
 
     try:
@@ -42,11 +49,18 @@ async def _encode_async(
         llm, embedder = get_providers(engine.config)
         llm_available = True
 
-        # Full EC parse: embedding + LLM feature extraction
         from ..brain.entorhinal import EntorhinalCortex
+        from ..brain.amygdala import Amygdala
 
         ec = EntorhinalCortex(llm, embedder)
-        parsed = await ec.parse(text)
+        amygdala = Amygdala(llm, threshold=engine.config.memory.importance_threshold)
+
+        # Run embedding+features and importance scoring concurrently
+        parse_task = asyncio.create_task(ec.parse(text))
+        importance_task = asyncio.create_task(amygdala.score_importance(text))
+
+        parsed, importance = await asyncio.gather(parse_task, importance_task)
+
         embedding = parsed.embedding
         parsed_features = {
             "entities": parsed.entities,
@@ -61,10 +75,9 @@ async def _encode_async(
     if embedding is None:
         embedding = _fallback_embedding(text, engine.config.embedding.dimensions)
 
-    # --- DG: Dentate Gyrus — pattern separation ---
+    # --- Phase 2: DG + CA1 (needs embedding) ---
     sparse_code = pattern_separate(embedding)
 
-    # --- CA1: Novelty Detection ---
     novelty_detector = CA1NoveltyDetector(
         novelty_threshold=engine.config.memory.novelty_threshold
     )
@@ -85,10 +98,18 @@ async def _encode_async(
 
     novelty = novelty_detector.detect(embedding, nearest)
 
-    # Handle contradictions via LLM if available
-    if novelty.verdict == NoveltyVerdict.UPDATE and novelty.closest_memory_id and llm_available:
+    # --- Phase 3: Contradiction check (needs novelty result) ---
+    # Check both UPDATE and REDUNDANT verdicts — semantically similar statements
+    # (e.g., "works at Google" vs "works at OpenAI") can have near-identical
+    # embeddings but still contradict each other. Only skip if the text is an
+    # exact duplicate of the existing memory.
+    if (
+        novelty.verdict in (NoveltyVerdict.UPDATE, NoveltyVerdict.REDUNDANT)
+        and novelty.closest_memory_id
+        and llm_available
+    ):
         existing = engine.event_store.get(novelty.closest_memory_id)
-        if existing:
+        if existing and existing.text.strip() != text.strip():
             is_contradiction = await novelty_detector.detect_with_contradiction(
                 text, existing.text, llm
             )
@@ -110,17 +131,6 @@ async def _encode_async(
             "closest_memory": novelty.closest_memory_id,
             "explanation": novelty.explanation,
         }
-
-    # --- Amygdala: Importance scoring ---
-    importance = 0.5
-    if llm_available:
-        try:
-            from ..brain.amygdala import Amygdala
-
-            amygdala = Amygdala(llm, threshold=engine.config.memory.importance_threshold)
-            importance = await amygdala.score_importance(text)
-        except Exception:
-            pass
 
     # Contradiction handling: archive old fact, store new
     if novelty.verdict == NoveltyVerdict.CONTRADICTS and novelty.closest_memory_id:

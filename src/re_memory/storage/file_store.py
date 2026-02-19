@@ -50,17 +50,46 @@ class FileStore:
         ]
 
     def search(self, query: str) -> list[dict]:
-        """Search across all schemas for matching content."""
+        """Search across all schemas for matching content.
+
+        Tokenizes the query into individual words and matches any schema
+        containing at least one keyword. Results are ranked by the number
+        of matching keywords.
+        """
+        stop_words = {
+            "a", "an", "the", "is", "are", "was", "were", "be", "been",
+            "do", "does", "did", "will", "would", "could", "should", "may",
+            "might", "can", "shall", "has", "have", "had", "of", "in", "to",
+            "for", "on", "at", "by", "with", "from", "about", "into", "and",
+            "or", "but", "not", "no", "so", "if", "then", "than", "that",
+            "this", "it", "its", "my", "your", "his", "her", "our", "their",
+            "what", "which", "who", "whom", "how", "when", "where", "why",
+            "me", "him", "us", "them", "i", "you", "he", "she", "we", "they",
+            "tell", "know", "think", "get", "make",
+        }
+        keywords = [
+            w for w in query.lower().split()
+            if w not in stop_words and len(w) > 1
+        ]
+        if not keywords:
+            keywords = query.lower().split()
+
         results = []
-        query_lower = query.lower()
         for path in self.schema_dir.glob("*.md"):
             content = path.read_text()
-            if query_lower in content.lower():
+            content_lower = content.lower()
+            hits = sum(1 for kw in keywords if kw in content_lower)
+            if hits > 0:
+                best_kw = next((kw for kw in keywords if kw in content_lower), keywords[0])
                 results.append({
                     "category": path.stem.replace("_", " "),
                     "path": str(path),
-                    "snippet": _extract_snippet(content, query_lower),
+                    "snippet": _extract_snippet(content, best_kw),
+                    "_hits": hits,
                 })
+        results.sort(key=lambda r: -r["_hits"])
+        for r in results:
+            del r["_hits"]
         return results
 
     def delete(self, category: str) -> bool:

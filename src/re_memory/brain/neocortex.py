@@ -77,8 +77,13 @@ Text: {text}"""
 New knowledge triples:
 {triples_text}
 
-Write a concise, well-organized markdown summary that incorporates all known facts.
-Focus on what's most important and actionable. Keep it under 500 words."""
+STRICT RULES:
+- ONLY include facts that appear in the triples above or the existing summary.
+- Do NOT add general knowledge, background information, or encyclopedia content.
+- Do NOT infer, speculate, or expand beyond what is stated in the triples.
+- Keep the summary short and factual — just organize the known facts clearly.
+- Use markdown with a "# Knowledge Summary: {category}" heading.
+- Maximum 200 words."""
 
         try:
             summary = await self.llm.complete(prompt)

@@ -33,3 +33,5 @@ Thumbs.db
 .env
 .env.local
 sources/
+re_memory.toml
+.claude/

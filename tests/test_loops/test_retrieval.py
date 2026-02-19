@@ -1,21 +1,7 @@
-"""Tests for the retrieval loop."""
+"""Tests for the retrieval loop.
 
-import pytest
-
-from re_memory.config import Config
-from re_memory.engine import MemoryEngine
-
-
-@pytest.fixture
-def engine(tmp_path):
-    config = Config(
-        data_dir=str(tmp_path / ".re-memory"),
-        storage={"sqlite_path": str(tmp_path / "events.db"), "schema_dir": str(tmp_path / "schemas")},
-    )
-    eng = MemoryEngine(config=config)
-    eng.init()
-    yield eng
-    eng.close()
+Uses the shared `engine` fixture from conftest.py for Qdrant isolation.
+"""
 
 
 def test_recall_empty(engine):

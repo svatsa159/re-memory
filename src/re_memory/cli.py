@@ -123,8 +123,13 @@ def init():
 
 
 @app.command()
-def status():
+def status(
+    output_json: bool = typer.Option(False, "--json", "-j", help="Output as JSON", is_eager=True),
+):
     """Memory health: counts, sizes, staleness."""
+    global json_output
+    if output_json:
+        json_output = True
     engine = _engine()
     data = engine.status()
     _output(data, title="Memory System Status")
@@ -134,8 +139,12 @@ def status():
 def observe(
     text: str = typer.Argument(..., help="Text to observe and store"),
     source: str = typer.Option("cli", "--source", "-s", help="Source of the observation"),
+    output_json: bool = typer.Option(False, "--json", "-j", help="Output as JSON", is_eager=True),
 ):
     """Write path: parse, encode, and store a memory."""
+    global json_output
+    if output_json:
+        json_output = True
     engine = _engine()
     result = engine.observe(text, source=source)
     _output(result, title="Memory Encoded")
@@ -146,36 +155,60 @@ def recall(
     query: str = typer.Argument(..., help="Query to recall memories"),
     max_tokens: Optional[int] = typer.Option(None, "--max-tokens", "-t", help="Token budget"),
     limit: int = typer.Option(10, "--limit", "-n", help="Max results"),
+    output_json: bool = typer.Option(False, "--json", "-j", help="Output as JSON", is_eager=True),
 ):
     """Read path: goal-conditioned memory retrieval."""
+    global json_output
+    if output_json:
+        json_output = True
     engine = _engine()
     result = engine.recall(query, max_tokens=max_tokens, limit=limit)
     _output(result, title="Recalled Memories")
 
 
 @app.command()
-def consolidate():
+def consolidate(
+    output_json: bool = typer.Option(False, "--json", "-j", help="Output as JSON", is_eager=True),
+):
     """Trigger the consolidation loop manually."""
+    global json_output
+    if output_json:
+        json_output = True
     engine = _engine()
     result = engine.consolidate()
     _output(result, title="Consolidation Results")
 
 
 @app.command()
-def forget(memory_id: str = typer.Argument(..., help="Memory ID to forget")):
+def forget(
+    memory_id: str = typer.Argument(..., help="Memory ID to forget"),
+    output_json: bool = typer.Option(False, "--json", "-j", help="Output as JSON", is_eager=True),
+):
     """Explicitly forget a memory by ID."""
+    global json_output
+    if output_json:
+        json_output = True
     engine = _engine()
     result = engine.forget(memory_id)
     _output(result, title="Forget Result")
 
 
 @app.command()
-def inspect(memory_id: str = typer.Argument(..., help="Memory ID to inspect")):
+def inspect(
+    memory_id: str = typer.Argument(..., help="Memory ID to inspect"),
+    output_json: bool = typer.Option(False, "--json", "-j", help="Output as JSON", is_eager=True),
+):
     """View a specific memory with full metadata."""
+    global json_output
+    if output_json:
+        json_output = True
     engine = _engine()
     result = engine.inspect(memory_id)
     if result is None:
-        console.print(f"[red]Memory not found: {memory_id}[/red]")
+        if json_output:
+            _output({"error": "not_found", "id": memory_id})
+        else:
+            console.print(f"[red]Memory not found: {memory_id}[/red]")
         raise typer.Exit(1)
     _output(result, title=f"Memory: {memory_id}")
 
@@ -184,16 +217,26 @@ def inspect(memory_id: str = typer.Argument(..., help="Memory ID to inspect")):
 def search(
     query: str = typer.Argument(..., help="Search query"),
     limit: int = typer.Option(10, "--limit", "-n", help="Max results"),
+    output_json: bool = typer.Option(False, "--json", "-j", help="Output as JSON", is_eager=True),
 ):
     """Search across all memory layers."""
+    global json_output
+    if output_json:
+        json_output = True
     engine = _engine()
     results = engine.search(query, limit=limit)
     _output(results, title=f"Search: {query}")
 
 
 @app.command()
-def history(limit: int = typer.Option(20, "--limit", "-n", help="Number of entries")):
+def history(
+    limit: int = typer.Option(20, "--limit", "-n", help="Number of entries"),
+    output_json: bool = typer.Option(False, "--json", "-j", help="Output as JSON", is_eager=True),
+):
     """Timeline of recent memory operations."""
+    global json_output
+    if output_json:
+        json_output = True
     engine = _engine()
     results = engine.history(limit=limit)
     _output(results, title="Recent Memory Operations")
@@ -202,8 +245,12 @@ def history(limit: int = typer.Option(20, "--limit", "-n", help="Number of entri
 @app.command(name="export")
 def export_cmd(
     path: Path = typer.Argument(..., help="Export file path"),
+    output_json: bool = typer.Option(False, "--json", "-j", help="Output as JSON", is_eager=True),
 ):
     """Export memory state to a JSON file."""
+    global json_output
+    if output_json:
+        json_output = True
     engine = _engine()
     result = engine.export_data(path)
     _output(result, title="Export Complete")
@@ -212,10 +259,17 @@ def export_cmd(
 @app.command(name="import")
 def import_cmd(
     path: Path = typer.Argument(..., help="Import file path"),
+    output_json: bool = typer.Option(False, "--json", "-j", help="Output as JSON", is_eager=True),
 ):
     """Import memory state from a JSON file."""
+    global json_output
+    if output_json:
+        json_output = True
     if not path.exists():
-        console.print(f"[red]File not found: {path}[/red]")
+        if json_output:
+            _output({"error": "file_not_found", "path": str(path)})
+        else:
+            console.print(f"[red]File not found: {path}[/red]")
         raise typer.Exit(1)
     engine = _engine()
     result = engine.import_data(path)

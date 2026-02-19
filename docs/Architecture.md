@@ -236,11 +236,13 @@ Novelty detection via prediction error:
 
 - Compares new input embedding against nearest existing memories
 - Prediction error = 1.0 - max_similarity
-- Verdict thresholds:
-  - PE > novelty_threshold (0.3): NOVEL
-  - PE < 0.1: REDUNDANT
-  - In between: UPDATE
-- Optional LLM-based contradiction detection for UPDATE cases
+- Verdict thresholds (where `T` = novelty_threshold, default 0.3):
+  - PE < T: REDUNDANT (very similar to existing memory)
+  - T ≤ PE ≤ (1 - T): UPDATE (moderate difference, possible update)
+  - PE > (1 - T): NOVEL (significantly different from all memories)
+- LLM-based contradiction detection runs for both UPDATE and REDUNDANT
+  verdicts (when PE ≥ 0.1) to catch semantically similar but factually
+  contradictory statements (e.g., job changes)
 
 ### Amygdala (`brain/amygdala.py`)
 

@@ -103,18 +103,30 @@ class MemoryEngine:
         # Vector store status
         try:
             info = self.vector_store.status()
-            status["stores"]["vector_store"] = "ok"
-            status["counts"]["vectors"] = info.get("vectors_count", 0)
+            if info.get("status") == "unavailable":
+                status["stores"]["vector_store"] = "unavailable"
+                status["counts"]["vectors"] = 0
+            else:
+                status["stores"]["vector_store"] = "ok"
+                status["counts"]["vectors"] = info.get("vectors_count", 0)
         except Exception:
             status["stores"]["vector_store"] = "unavailable"
+            status["counts"]["vectors"] = 0
 
         # Graph store status
         try:
             info = self.graph_store.status()
-            status["stores"]["graph_store"] = "ok"
-            status["counts"].update(info)
+            if info.get("status") == "unavailable":
+                status["stores"]["graph_store"] = "unavailable"
+                status["counts"]["graph_nodes"] = 0
+                status["counts"]["graph_edges"] = 0
+            else:
+                status["stores"]["graph_store"] = "ok"
+                status["counts"].update({k: v for k, v in info.items() if k != "status"})
         except Exception:
             status["stores"]["graph_store"] = "unavailable"
+            status["counts"]["graph_nodes"] = 0
+            status["counts"]["graph_edges"] = 0
 
         # Schema files
         schema_dir = self.config.schema_path
@@ -158,12 +170,42 @@ class MemoryEngine:
         return consolidate(self)
 
     def forget(self, memory_id: str) -> dict:
-        """Explicitly forget a memory."""
+        """Explicitly forget a memory, cascading across all layers.
+
+        Removes:
+          - Episodic event from SQLite (Layer 2)
+          - Embedding vector from Qdrant
+          - Graph triples sourced from this event (Layer 3)
+        """
+        deleted_layers = []
         try:
             self.event_store.delete(memory_id)
-            return {"status": "forgotten", "id": memory_id}
-        except Exception as e:
-            return {"status": "error", "error": str(e)}
+            deleted_layers.append("episodic")
+        except Exception:
+            pass
+
+        # Remove vector embedding
+        try:
+            self.vector_store.delete(memory_id)
+            deleted_layers.append("vector")
+        except Exception:
+            pass
+
+        # Remove graph triples sourced from this event
+        try:
+            count = self.graph_store.delete_by_source_event(memory_id)
+            if count > 0:
+                deleted_layers.append(f"graph({count} triples)")
+        except Exception:
+            pass
+
+        if deleted_layers:
+            return {
+                "status": "forgotten",
+                "id": memory_id,
+                "deleted_from": deleted_layers,
+            }
+        return {"status": "error", "error": "Memory not found in any layer"}
 
     def inspect(self, memory_id: str) -> dict | None:
         """View a specific memory with full metadata."""

@@ -277,6 +277,25 @@ def import_cmd(
 
 
 @app.command()
+def purge(
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation prompt"),
+    output_json: bool = typer.Option(False, "--json", "-j", help="Output as JSON", is_eager=True),
+):
+    """Wipe all memory stores (events, vectors, graph, schemas)."""
+    global json_output
+    if output_json:
+        json_output = True
+    if not yes and not json_output:
+        typer.confirm(
+            "This will delete ALL memories, vectors, graph data, and schemas. Continue?",
+            abort=True,
+        )
+    engine = _engine()
+    result = engine.purge()
+    _output(result, title="Purge Complete")
+
+
+@app.command()
 def config():
     """View current configuration."""
     cfg = load_config()

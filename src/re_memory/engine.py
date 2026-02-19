@@ -250,6 +250,54 @@ class MemoryEngine:
 
         return {"imported": count, "path": str(path)}
 
+    def purge(self) -> dict:
+        """Wipe all memory stores. Deletes every episodic event, vector,
+        graph node/edge, and schema file. Re-initializes empty stores."""
+        purged = {}
+
+        # SQLite — delete all events and operation log
+        try:
+            events = self.event_store.all()
+            count = len(events)
+            for ev in events:
+                self.event_store.delete(ev.id)
+            # Clear operation log too
+            self.event_store.conn.execute("DELETE FROM memory_operations")
+            self.event_store.conn.commit()
+            purged["episodic_events"] = count
+        except Exception as e:
+            purged["episodic_events"] = f"error: {e}"
+
+        # Qdrant — drop and recreate collection
+        try:
+            self.vector_store.client.delete_collection(self.vector_store.collection_name)
+            self.vector_store.init()
+            purged["vectors"] = "purged"
+        except Exception as e:
+            purged["vectors"] = f"error: {e}"
+
+        # FalkorDB — delete all nodes and edges
+        try:
+            self.graph_store.graph.query("MATCH (n) DETACH DELETE n")
+            purged["graph"] = "purged"
+        except Exception as e:
+            purged["graph"] = f"error: {e}"
+
+        # Schema files
+        try:
+            schema_dir = self.config.schema_path
+            if schema_dir.exists():
+                schemas = list(schema_dir.glob("*.md"))
+                for f in schemas:
+                    f.unlink()
+                purged["schemas"] = len(schemas)
+            else:
+                purged["schemas"] = 0
+        except Exception as e:
+            purged["schemas"] = f"error: {e}"
+
+        return {"status": "purged", **purged}
+
     def close(self):
         """Close all connections."""
         if self._event_store:

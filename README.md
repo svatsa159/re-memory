@@ -7,7 +7,7 @@
 *Not a metaphor — actual neuroscience mapped to software.*
 
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-3776ab?style=flat-square&logo=python&logoColor=white)](https://python.org)
-[![Rust](https://img.shields.io/badge/rust-core-dea584?style=flat-square&logo=rust&logoColor=white)](https://rust-lang.org)
+[![Rust](https://img.shields.io/badge/rust-optional_accelerator-dea584?style=flat-square&logo=rust&logoColor=white)](https://rust-lang.org)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green?style=flat-square)](LICENSE)
 [![Tests](https://img.shields.io/badge/tests-68_passing-brightgreen?style=flat-square)]()
 
@@ -101,7 +101,7 @@ Input ──> Entorhinal Cortex ──> Dentate Gyrus ──> CA1 ──> Amygda
           parse + embed         sparse fingerprint  new?    important?   SQLite + Qdrant
 ```
 
-> Redundant input **reinforces** existing memories instead of duplicating. Contradictions are detected — the old fact gets archived, the new one takes over.
+> Embedding, feature extraction, and importance scoring run **in parallel** for speed. Redundant input **reinforces** existing memories instead of duplicating. Contradictions are detected via LLM — the old fact gets archived, the new one takes over.
 
 ### Read (Retrieval)
 
@@ -125,21 +125,51 @@ events     to graph    to schemas   Ebbinghaus below     dedup
 
 ---
 
-## Quick Start
+## Install
 
 ```bash
-# Clone and install (builds Rust extension automatically)
+# Install from PyPI (no Rust required)
+pipx install re-memory
+
+# Or with pip
+pip install re-memory
+```
+
+<details>
+<summary><b>Development install (from source)</b></summary>
+
+```bash
 git clone https://github.com/your-org/re-memory.git
 cd re-memory
 uv venv .venv && source .venv/bin/activate
 uv pip install -e ".[dev]"
 
-# Start infrastructure (optional — works without Docker too)
-docker compose -f docker-compose.dev.yml up -d
+# Optional: build Rust accelerator for faster math
+pip install maturin
+maturin develop --release
+```
 
-# Initialize
+</details>
+
+## Setup
+
+```bash
+# Start infrastructure (pick what you need)
+re-memory setup -s qdrant -s falkordb    # recommended minimum
+re-memory setup --all                     # everything including ollama + postgres
+
+# Or bring your own Docker setup
+docker compose up -d
+
+# Initialize memory stores
 re-memory init
 ```
+
+> **No Docker?** re-memory works without any containers — it falls back to SQLite text search and hash-based embeddings. See [Graceful Degradation](#graceful-degradation).
+
+---
+
+## Quick Start
 
 ```bash
 # Store memories
@@ -151,17 +181,28 @@ re-memory observe "User's favorite editor is Neovim"
 re-memory recall "What programming language?"
 re-memory recall "Where does the user work?"
 
+# Contradiction handling — old fact archived, new one stored
+re-memory observe "User now works at Anthropic"
+
 # Consolidate (decay, prune, promote to knowledge graph)
 re-memory consolidate
 
-# Forget explicitly
-re-memory forget <memory-id>
+# Wipe everything and start fresh
+re-memory purge --yes
 ```
 
 <details>
 <summary><b>All CLI commands</b></summary>
 
 ```bash
+# Setup & lifecycle
+re-memory setup -s qdrant -s falkordb  # Start infrastructure services
+re-memory setup --all                   # Start all services
+re-memory setup status                  # Check running services
+re-memory setup stop                    # Stop all services
+re-memory init                          # Initialize memory stores
+re-memory purge --yes                   # Wipe all data (events, vectors, graph, schemas)
+
 # Core operations
 re-memory observe <text>              # Store a memory
 re-memory recall <query>              # Retrieve memories
@@ -185,8 +226,8 @@ re-memory daemon stop                 # Stop daemon
 re-memory daemon status               # Check daemon state
 
 # JSON mode (for agent integration)
-re-memory --json observe "..."        # Machine-readable output
-re-memory --json recall "..."         # Structured JSON responses
+re-memory observe "..." --json        # Machine-readable output
+re-memory recall "..." --json         # Structured JSON responses
 ```
 
 </details>
@@ -200,7 +241,7 @@ re-memory is **agent-agnostic**. Any agent can use it as an external memory serv
 ### CLI with JSON mode
 
 ```bash
-re-memory --json observe "User prefers async Python over threads"
+re-memory observe "User prefers async Python over threads" --json
 ```
 
 ```json
@@ -210,7 +251,7 @@ re-memory --json observe "User prefers async Python over threads"
   "verdict": "novel",
   "prediction_error": 1.0,
   "confidence": 0.5,
-  "importance": 0.5,
+  "importance": 0.7,
   "sparse_code_bits": 64
 }
 ```
@@ -233,6 +274,10 @@ for m in memories["memories"]:
 
 # Consolidate
 engine.consolidate()
+
+# Wipe everything
+engine.purge()
+
 engine.close()
 ```
 
@@ -243,7 +288,7 @@ import subprocess, json
 
 def recall(query: str) -> list[dict]:
     result = subprocess.run(
-        ["re-memory", "--json", "recall", query],
+        ["re-memory", "recall", query, "--json"],
         capture_output=True, text=True
     )
     return json.loads(result.stdout)["memories"]
@@ -252,6 +297,40 @@ def recall(query: str) -> list[dict]:
 memories = recall("What does the user prefer?")
 context = "\n".join(m["content"] for m in memories)
 ```
+
+---
+
+## Performance
+
+Benchmarked on MacBook with DeepSeek Chat API + local Ollama (mxbai-embed-large) + Qdrant + FalkorDB:
+
+| Command | Avg Time | Bottleneck |
+|:---|---:|:---|
+| **observe** | **4.0s** | LLM calls (parallel: embed + features + importance) |
+| **recall** | **143ms** | Qdrant vector search + SQLite |
+| **search** | **0.9ms** | Pure SQLite text search |
+| **status** | **224ms** | Qdrant health check |
+| **consolidate** | **30s** | LLM calls (batch, runs as background job) |
+| **forget** | **84ms** | SQLite + Qdrant cascade delete |
+| **inspect** | **0.2ms** | SQLite lookup |
+| **history** | **2.9ms** | SQLite query |
+| **export/import** | **6-8ms** | File I/O |
+| **purge** | **<100ms** | SQLite + Qdrant + FalkorDB wipe |
+
+### Pipeline breakdown (per observe)
+
+```
+LLM feature extraction     ~3.6s  ████████████████████  ← runs in parallel
+LLM importance scoring     ~1.4s  ████████              ← hidden behind feature extraction
+LLM contradiction check    ~1.4s  ████████              ← only if similar memory exists
+Ollama embedding            110ms  █
+Qdrant vector search         15ms  ░
+SQLite text search            5ms  ░
+```
+
+> **Model matters.** Using `deepseek-chat` instead of `deepseek-reasoner` gives a ~12x speedup (4s vs 47s per observe). Reasoning models are overkill for JSON extraction tasks.
+
+> **Embedding model matters.** `mxbai-embed-large` (1024d) properly distinguishes entities — cosine("works at Google", "works at OpenAI") = 0.724. `nomic-embed-text` (768d) gives 1.000 for the same pair, making contradiction detection impossible without the LLM fallback.
 
 ---
 
@@ -273,7 +352,7 @@ Every external dependency is optional. re-memory works with just Python and SQLi
 
 | Component | Technology | Purpose |
 |:---|:---|:---|
-| **Core** | Python + Rust (PyO3/maturin) | Python orchestration, Rust hot-path math |
+| **Core** | Python (+ optional Rust via PyO3) | Python orchestration, Rust hot-path math |
 | **Event Store** | SQLite / PostgreSQL | Episodic memory storage |
 | **Vector Store** | Qdrant | Embedding similarity search |
 | **Knowledge Graph** | FalkorDB | Structured facts with temporal scoping |
@@ -285,20 +364,21 @@ Every external dependency is optional. re-memory works with just Python and SQLi
 
 ## Configuration
 
-Config lives at `~/.re-memory/config.toml`:
+Config lives at `./re_memory.toml` (project-local) or `~/.re-memory/config.toml` (global fallback):
 
 ```toml
 [llm]
-provider = "ollama"       # ollama, openai, anthropic, deepseek
-model = "llama3.2"
+provider = "deepseek"         # ollama, openai, anthropic, deepseek
+model = "deepseek-chat"       # use chat models, not reasoning models
+api_key = "sk-..."
 
 [embedding]
-provider = "ollama"       # ollama, openai
-model = "nomic-embed-text"
-dimensions = 768
+provider = "ollama"           # ollama, openai
+model = "mxbai-embed-large"   # recommended: 1024d, good entity discrimination
+dimensions = 1024
 
 [consolidation]
-decay_rate = 0.1          # higher = faster forgetting
+decay_rate = 0.1              # higher = faster forgetting
 confidence_threshold = 0.3
 interval_hours = 24
 
@@ -344,17 +424,19 @@ api_key = "sk-..."
 </details>
 
 <details>
-<summary><b>Using DeepSeek</b></summary>
+<summary><b>Using DeepSeek (recommended for cost)</b></summary>
 
 ```toml
 [llm]
 provider = "deepseek"
-model = "deepseek-reasoner"
+model = "deepseek-chat"       # NOT deepseek-reasoner (12x slower)
 api_key = "sk-..."
 
 [embedding]
 provider = "ollama"
-model = "nomic-embed-text"
+model = "mxbai-embed-large"   # 1024 dimensions
+base_url = "http://localhost:11434"
+dimensions = 1024
 ```
 
 </details>
@@ -365,7 +447,7 @@ model = "nomic-embed-text"
 
 ```
 re-memory/
-├── rust/src/                  # Rust core (PyO3) — pattern separation, Hopfield, decay
+├── rust/src/                  # Optional Rust core (PyO3) — pattern separation, Hopfield, decay
 ├── src/re_memory/
 │   ├── brain/                 # Brain components (EC, DG, CA3, CA1, PFC, BG, Amygdala, Neocortex)
 │   ├── loops/                 # Processing loops (encoding, retrieval, consolidation, reconsolidation)

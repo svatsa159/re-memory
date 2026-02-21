@@ -30,7 +30,8 @@
       "Bash(COMPOSE_PROFILES=production docker compose:*)",
       "Bash(PGPASSWORD=re_memory psql:*)",
       "Bash(lsof:*)",
-      "Bash(# Full clean first rm -f ~/.re-memory/events.db rm -rf ~/.re-memory/schemas/ ; mkdir -p ~/.re-memory/schemas python -c \"\" from qdrant_client import QdrantClient try: c = QdrantClient\\(url=''http://localhost:6333''\\) c.delete_collection\\(''re_memory_embeddings''\\) except: pass from falkordb import FalkorDB try: f = FalkorDB\\(host=''localhost'', port=6379\\) g = f.select_graph\\(''re_memory''\\) g.query\\(''MATCH \\(n\\) DETACH DELETE n''\\) except: pass \"\" re-memory init 2>&1)"
+      "Bash(# Full clean first rm -f ~/.re-memory/events.db rm -rf ~/.re-memory/schemas/ ; mkdir -p ~/.re-memory/schemas python -c \"\" from qdrant_client import QdrantClient try: c = QdrantClient\\(url=''http://localhost:6333''\\) c.delete_collection\\(''re_memory_embeddings''\\) except: pass from falkordb import FalkorDB try: f = FalkorDB\\(host=''localhost'', port=6379\\) g = f.select_graph\\(''re_memory''\\) g.query\\(''MATCH \\(n\\) DETACH DELETE n''\\) except: pass \"\" re-memory init 2>&1)",
+      "Bash(pip install:*)"
     ]
   }
 }

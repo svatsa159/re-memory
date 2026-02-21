@@ -27,6 +27,13 @@ def test_novel_when_very_different():
 
 def test_update_when_moderate():
     detector = CA1NoveltyDetector(novelty_threshold=0.3)
-    # similarity 0.5 → PE 0.5 → between thresholds → update
-    result = detector.detect([0.1] * 768, [("mem-1", 0.5)])
+    # similarity 0.62 → PE 0.38 → in UPDATE band (0.30 to 0.45) → update
+    result = detector.detect([0.1] * 768, [("mem-1", 0.62)])
     assert result.verdict == NoveltyVerdict.UPDATE
+
+
+def test_novel_when_moderate_but_different_topic():
+    detector = CA1NoveltyDetector(novelty_threshold=0.3)
+    # similarity 0.50 → PE 0.50 → above UPDATE ceiling (0.45) → novel
+    result = detector.detect([0.1] * 768, [("mem-1", 0.50)])
+    assert result.verdict == NoveltyVerdict.NOVEL

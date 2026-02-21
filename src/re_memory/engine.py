@@ -7,6 +7,7 @@ This is the central entry point that the CLI and programmatic APIs call.
 from __future__ import annotations
 
 import json
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -27,6 +28,7 @@ class MemoryEngine:
     _vector_store: VectorStore | None = None
     _graph_store: GraphStore | None = None
     _initialized: bool = False
+    _executor: ThreadPoolExecutor | None = None
 
     @property
     def event_store(self) -> EventStore:
@@ -138,15 +140,61 @@ class MemoryEngine:
 
         return status
 
-    def observe(self, text: str, source: str = "cli", metadata: dict | None = None) -> dict:
+    def observe(
+        self,
+        text: str,
+        source: str = "cli",
+        metadata: dict | None = None,
+        tier: str | None = None,
+        background: bool = False,
+    ) -> dict:
         """Write path: parse → encode → store.
 
-        This is the main entry point for the encoding loop.
-        In Phase 1, we do basic storage. Full brain pipeline comes in Phase 2.
+        Args:
+            tier: Override observe pipeline tier (fast/standard/full).
+            background: If True, submit to background thread and return immediately.
         """
         from .loops.encoding import encode
 
-        return encode(self, text, source=source, metadata=metadata)
+        if background:
+            if self._executor is None:
+                self._executor = ThreadPoolExecutor(max_workers=1)
+            self._executor.submit(self._observe_sync, text, source, metadata, tier)
+            return {"status": "accepted", "background": True}
+
+        return encode(self, text, source=source, metadata=metadata, tier=tier)
+
+    def _observe_sync(
+        self, text: str, source: str, metadata: dict | None, tier: str | None
+    ) -> dict:
+        """Synchronous observe for background execution."""
+        from .loops.encoding import encode
+        return encode(self, text, source=source, metadata=metadata, tier=tier)
+
+    def observe_batch(
+        self,
+        texts: list[str],
+        source: str = "cli",
+        tier: str | None = None,
+        background: bool = False,
+    ) -> dict | list[dict]:
+        """Batch observe: encode multiple texts efficiently.
+
+        Args:
+            texts: List of texts to observe.
+            source: Source label.
+            tier: Override observe tier.
+            background: If True, process in background thread.
+        """
+        from .loops.encoding import encode_batch
+
+        if background:
+            if self._executor is None:
+                self._executor = ThreadPoolExecutor(max_workers=1)
+            self._executor.submit(encode_batch, self, texts, source, tier)
+            return {"status": "accepted", "background": True, "count": len(texts)}
+
+        return encode_batch(self, texts, source=source, tier=tier)
 
     def recall(self, query: str, max_tokens: int | None = None, **kwargs) -> dict:
         """Read path: goal-conditioned retrieval.
@@ -176,7 +224,12 @@ class MemoryEngine:
           - Episodic event from SQLite (Layer 2)
           - Embedding vector from Qdrant
           - Graph triples sourced from this event (Layer 3)
+          - Invalidates schemas referencing the forgotten content (Layer 4)
         """
+        # Get event text before deleting (needed for schema invalidation)
+        event = self.event_store.get(memory_id)
+        event_text = event.text if event else ""
+
         deleted_layers = []
         try:
             self.event_store.delete(memory_id)
@@ -199,6 +252,15 @@ class MemoryEngine:
         except Exception:
             pass
 
+        # Invalidate schemas that reference the forgotten content
+        if event_text:
+            try:
+                schemas_invalidated = self._invalidate_schemas_for(event_text)
+                if schemas_invalidated:
+                    deleted_layers.append(f"schemas({schemas_invalidated})")
+            except Exception:
+                pass
+
         if deleted_layers:
             return {
                 "status": "forgotten",
@@ -206,6 +268,85 @@ class MemoryEngine:
                 "deleted_from": deleted_layers,
             }
         return {"status": "error", "error": "Memory not found in any layer"}
+
+    def _invalidate_schemas_for(self, text: str) -> int:
+        """Surgically remove lines referencing the forgotten text from schemas.
+
+        Instead of deleting entire schema files, removes only the lines/paragraphs
+        that contain keywords from the forgotten text. If a schema becomes empty
+        after removal, deletes the file entirely. Marks related events as
+        unconsolidated so next consolidation rebuilds schemas from remaining data.
+        """
+        from .storage.file_store import FileStore
+
+        file_store = FileStore(self.config.schema_path)
+        matching = file_store.search(text)
+
+        if not matching:
+            return 0
+
+        # Extract meaningful keywords from the forgotten text
+        stop_words = {
+            "a", "an", "the", "is", "are", "was", "were", "be", "been",
+            "do", "does", "did", "will", "would", "could", "should", "may",
+            "might", "can", "shall", "has", "have", "had", "of", "in", "to",
+            "for", "on", "at", "by", "with", "from", "about", "into", "and",
+            "or", "but", "not", "no", "so", "if", "then", "than", "that",
+            "this", "it", "its", "my", "your", "his", "her", "our", "their",
+            "user", "prefers", "likes", "uses",
+        }
+        keywords = [
+            w.lower() for w in text.split()
+            if w.lower() not in stop_words and len(w) > 2
+        ]
+
+        updated = 0
+        for match in matching:
+            category = match["category"]
+            content = file_store.get(category)
+            if not content:
+                continue
+
+            # Remove lines containing any keyword from the forgotten text
+            lines = content.split("\n")
+            kept = []
+            removed_any = False
+            for line in lines:
+                line_lower = line.lower()
+                # Keep headings, timestamp comments, and lines without keyword matches
+                is_heading = line.strip().startswith("#")
+                is_comment = line.strip().startswith("<!--")
+                has_keyword = any(kw in line_lower for kw in keywords)
+                if is_heading or is_comment or not has_keyword:
+                    kept.append(line)
+                else:
+                    removed_any = True
+
+            if not removed_any:
+                continue
+
+            # Check if anything meaningful remains (beyond headings/comments/blank)
+            meaningful = [
+                l for l in kept
+                if l.strip() and not l.strip().startswith("#") and not l.strip().startswith("<!--")
+            ]
+
+            if meaningful:
+                file_store.put(category, "\n".join(kept))
+            else:
+                file_store.delete(category)
+            updated += 1
+
+        # Mark related events as unconsolidated so next consolidation
+        # rebuilds the affected schemas from remaining graph data
+        if updated > 0:
+            self.event_store.conn.execute(
+                "UPDATE episodic_events SET consolidated = 0 "
+                "WHERE consolidated = 1"
+            )
+            self.event_store.conn.commit()
+
+        return updated
 
     def inspect(self, memory_id: str) -> dict | None:
         """View a specific memory with full metadata."""
@@ -230,7 +371,7 @@ class MemoryEngine:
         data = {
             "version": "0.1.0",
             "exported_at": datetime.now(timezone.utc).isoformat(),
-            "events": [e.to_dict() for e in events],
+            "events": [e.to_full_dict() for e in events],
         }
         path.parent.mkdir(parents=True, exist_ok=True)
         with open(path, "w") as f:
@@ -238,17 +379,43 @@ class MemoryEngine:
         return {"exported": len(events), "path": str(path)}
 
     def import_data(self, path: Path) -> dict:
-        """Import memory data from a JSON file."""
+        """Import memory data from a JSON file.
+
+        Restores events to SQLite and re-indexes embeddings into Qdrant.
+        Knowledge graph is NOT rebuilt — run `consolidate` after import for that.
+        """
         with open(path) as f:
             data = json.load(f)
 
         count = 0
+        vectors_indexed = 0
         for event_data in data.get("events", []):
             event = EpisodicEvent.from_dict(event_data)
             self.event_store.upsert(event)
             count += 1
 
-        return {"imported": count, "path": str(path)}
+            # Re-index embedding into Qdrant if available
+            if event.embedding:
+                try:
+                    self.vector_store.upsert(
+                        point_id=event.id,
+                        vector=event.embedding,
+                        payload={
+                            "text": event.text,
+                            "source": event.source,
+                            "importance": event.importance,
+                            "created_at": event.created_at,
+                        },
+                    )
+                    vectors_indexed += 1
+                except Exception:
+                    pass
+
+        return {
+            "imported": count,
+            "vectors_indexed": vectors_indexed,
+            "path": str(path),
+        }
 
     def purge(self) -> dict:
         """Wipe all memory stores. Deletes every episodic event, vector,
@@ -299,7 +466,10 @@ class MemoryEngine:
         return {"status": "purged", **purged}
 
     def close(self):
-        """Close all connections."""
+        """Close all connections and shut down background executor."""
+        if self._executor:
+            self._executor.shutdown(wait=True)
+            self._executor = None
         if self._event_store:
             self._event_store.close()
         if self._vector_store:

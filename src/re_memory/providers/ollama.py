@@ -67,14 +67,10 @@ class OllamaEmbedding(EmbeddingProvider):
         return self._dims
 
     async def embed(self, texts: list[str]) -> list[list[float]]:
-        results = []
         async with httpx.AsyncClient(timeout=60.0) as client:
-            for text in texts:
-                resp = await client.post(
-                    f"{self.base_url}/api/embed",
-                    json={"model": self.model, "input": text},
-                )
-                resp.raise_for_status()
-                data = resp.json()
-                results.append(data["embeddings"][0])
-        return results
+            resp = await client.post(
+                f"{self.base_url}/api/embed",
+                json={"model": self.model, "input": texts},
+            )
+            resp.raise_for_status()
+            return resp.json()["embeddings"]

@@ -81,6 +81,7 @@ STRICT RULES:
 - ONLY include facts that appear in the triples above or the existing summary.
 - Do NOT add general knowledge, background information, or encyclopedia content.
 - Do NOT infer, speculate, or expand beyond what is stated in the triples.
+- If a new triple CONTRADICTS or REPLACES an existing fact in the summary (e.g., same attribute like job/location/preference but different value), REPLACE the old fact with the new one. Do NOT keep both. The new triple is always more recent and correct.
 - Keep the summary short and factual — just organize the known facts clearly.
 - Use markdown with a "# Knowledge Summary: {category}" heading.
 - Maximum 200 words."""

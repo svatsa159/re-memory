@@ -4,7 +4,8 @@ Usage:
     re-memory setup             Set up infrastructure services
     re-memory init              Initialize memory store
     re-memory status            Memory health and statistics
-    re-memory observe <input>   Store a new memory
+    re-memory observe <input>   Store a new memory (--tier, --background)
+    re-memory observe-batch     Batch observe from stdin or file
     re-memory recall <query>    Retrieve memories
     re-memory consolidate       Trigger consolidation
     re-memory forget <id>       Forget a memory
@@ -145,6 +146,8 @@ def status(
 def observe(
     text: str = typer.Argument(..., help="Text to observe and store"),
     source: str = typer.Option("cli", "--source", "-s", help="Source of the observation"),
+    tier: Optional[str] = typer.Option(None, "--tier", help="Pipeline tier: fast, standard, full"),
+    background: bool = typer.Option(False, "--background", "-b", help="Process in background"),
     output_json: bool = typer.Option(False, "--json", "-j", help="Output as JSON", is_eager=True),
 ):
     """Write path: parse, encode, and store a memory."""
@@ -152,8 +155,11 @@ def observe(
     if output_json:
         json_output = True
     engine = _engine()
-    result = engine.observe(text, source=source)
-    _output(result, title="Memory Encoded")
+    result = engine.observe(text, source=source, tier=tier, background=background)
+    if background and not json_output:
+        console.print("[green]Accepted (processing in background)[/green]")
+    else:
+        _output(result, title="Memory Encoded")
 
 
 @app.command()
@@ -299,6 +305,41 @@ def purge(
     engine = _engine()
     result = engine.purge()
     _output(result, title="Purge Complete")
+
+
+@app.command(name="observe-batch")
+def observe_batch(
+    file: Optional[Path] = typer.Option(None, "--file", "-f", help="File with one text per line"),
+    source: str = typer.Option("cli", "--source", "-s", help="Source label"),
+    tier: Optional[str] = typer.Option(None, "--tier", help="Pipeline tier: fast, standard, full"),
+    background: bool = typer.Option(False, "--background", "-b", help="Process in background"),
+    output_json: bool = typer.Option(False, "--json", "-j", help="Output as JSON", is_eager=True),
+):
+    """Batch observe: read texts from stdin (one per line) or --file."""
+    global json_output
+    if output_json:
+        json_output = True
+
+    if file is not None:
+        if not file.exists():
+            console.print(f"[red]File not found: {file}[/red]")
+            raise typer.Exit(1)
+        texts = [line.strip() for line in file.read_text().splitlines() if line.strip()]
+    else:
+        # Read from stdin
+        texts = [line.strip() for line in sys.stdin if line.strip()]
+
+    if not texts:
+        console.print("[yellow]No texts provided.[/yellow]")
+        raise typer.Exit(1)
+
+    engine = _engine()
+    result = engine.observe_batch(texts, source=source, tier=tier, background=background)
+
+    if background and not json_output:
+        console.print(f"[green]Accepted {len(texts)} texts (processing in background)[/green]")
+    else:
+        _output(result if isinstance(result, dict) else {"results": result}, title="Batch Observe")
 
 
 @app.command()

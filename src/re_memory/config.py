@@ -56,6 +56,7 @@ class MemoryConfig(BaseModel):
     max_retrieval_tokens: int = 2000
     novelty_threshold: float = Field(default=0.3, description="CA1 prediction error threshold")
     importance_threshold: float = Field(default=0.5, description="Amygdala salience gate")
+    observe_tier: str = Field(default="standard", description="Observe pipeline tier: fast, standard, full")
 
 
 class Config(BaseModel):

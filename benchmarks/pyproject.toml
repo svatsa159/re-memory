@@ -1,0 +1,33 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "re-memory-benchmarks"
+version = "0.1.0"
+description = "Academic benchmark suite for re-memory engine"
+requires-python = ">=3.11"
+dependencies = [
+    "re-memory",
+    "datasets>=2.19",       # HuggingFace datasets for loading benchmarks
+    "evaluate>=0.4",        # HuggingFace evaluate for metrics
+    "rouge-score>=0.1",     # ROUGE metric
+    "nltk>=3.8",            # Tokenization, BLEU
+    "scikit-learn>=1.4",    # F1, precision, recall
+    "tabulate>=0.9",        # Result tables
+    "typer>=0.12",          # CLI
+    "rich>=13.0",           # Pretty output
+    "tqdm>=4.66",           # Progress bars
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+]
+
+[project.scripts]
+re-memory-bench = "benchmarks.cli:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["benchmarks"]

@@ -46,12 +46,10 @@ class CA1NoveltyDetector:
     ) -> NoveltyResult:
         """Determine if input is novel, redundant, or contradictory.
 
-        Args:
-            query_embedding: Embedding of the new input
-            nearest_matches: Top matches from vector search as (id, similarity) pairs
-
-        Returns:
-            NoveltyResult with verdict and prediction error
+        Thresholds (with default novelty_threshold=0.3):
+          - REDUNDANT: PE < 0.3  (sim > 0.70) — near-duplicate
+          - UPDATE:    PE < 0.45 (sim > 0.55) — same topic, modified info
+          - NOVEL:     PE >= 0.45 (sim <= 0.55) — genuinely new
         """
         if not nearest_matches:
             return NoveltyResult(
@@ -73,23 +71,25 @@ class CA1NoveltyDetector:
                 explanation=f"Very similar to existing memory (sim={best_sim:.3f}).",
             )
 
-        if prediction_error > (1.0 - self.novelty_threshold):
-            # Very different → novel
+        # UPDATE band: slightly above redundancy threshold
+        # Only memories close enough to be about the same subject
+        update_ceiling = self.novelty_threshold + 0.15
+        if prediction_error < update_ceiling:
             return NoveltyResult(
-                verdict=NoveltyVerdict.NOVEL,
+                verdict=NoveltyVerdict.UPDATE,
                 prediction_error=prediction_error,
                 closest_memory_id=best_id,
                 closest_similarity=best_sim,
-                explanation=f"Significantly different from all memories (PE={prediction_error:.3f}).",
+                explanation=f"Similar to existing memory — possible update (PE={prediction_error:.3f}).",
             )
 
-        # Moderate prediction error → could be an update
+        # Everything else is novel
         return NoveltyResult(
-            verdict=NoveltyVerdict.UPDATE,
+            verdict=NoveltyVerdict.NOVEL,
             prediction_error=prediction_error,
             closest_memory_id=best_id,
             closest_similarity=best_sim,
-            explanation=f"Moderate similarity — possible update (PE={prediction_error:.3f}).",
+            explanation=f"Sufficiently different from existing memories (PE={prediction_error:.3f}).",
         )
 
     async def detect_with_contradiction(
@@ -99,11 +99,29 @@ class CA1NoveltyDetector:
         llm,
     ) -> bool:
         """Use LLM to determine if new information contradicts existing memory."""
-        prompt = f"""Do these two statements contradict each other? Answer with JSON:
-{{"contradicts": true/false, "reason": "brief explanation"}}
+        prompt = f"""You are comparing two memory statements about the same entity.
 
-Statement A (existing): {existing_text}
-Statement B (new): {new_text}"""
+Statement A (old): {existing_text}
+Statement B (new): {new_text}
+
+Does Statement B REPLACE or CONTRADICT Statement A? Think step by step:
+1. Do both statements describe the same entity or person?
+2. Do they describe the same attribute (job, location, preference, status, role)?
+3. Do they give DIFFERENT values for that attribute?
+
+If YES to all three → contradicts.
+
+Examples of contradictions:
+- "works at Google" vs "works at OpenAI" → YES (same person, same attribute: employer, different values)
+- "lives in NYC" vs "lives in London" → YES (same attribute: location)
+- "prefers Python" vs "prefers Rust" → YES (same attribute: language preference)
+- "works at Google" vs "works at Google DeepMind" → YES (employer changed/updated)
+
+Examples of NOT contradictions:
+- "likes Python" vs "works at Google" → NO (different attributes)
+- "has a dog" vs "has a cat" → NO (can have both)
+
+Return JSON: {{"contradicts": true/false, "reason": "brief"}}"""
 
         try:
             result = await llm.complete_json(prompt)
